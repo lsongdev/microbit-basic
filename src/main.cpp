@@ -1,105 +1,114 @@
 #include <Arduino.h>
 
-// Arduino pin numbers from the BBCmicrobitV2 variant (not nRF GPIO numbers).
-constexpr uint8_t kRows[] = {21, 22, 23, 24, 25};
-constexpr uint8_t kColumns[] = {4, 7, 3, 6, 10};
-constexpr uint32_t kDebounceMs = 30;
-constexpr uint32_t kFrameMs = 400;
-
-// Each byte is one row; bit 4 is the leftmost pixel.
-constexpr uint8_t kPictures[][5] = {
-    {0b01010, 0b11111, 0b11111, 0b01110, 0b00100}, // large heart
-    {0b00000, 0b01010, 0b01110, 0b00100, 0b00000}, // small heart
-    {0b00000, 0b01010, 0b00000, 0b10001, 0b01110}, // smile
+/* Arduino pin numbers from the BBC micro:bit V2 variant. */
+static const uint8_t rows[5] = {21, 22, 23, 24, 25};
+static const uint8_t columns[5] = {4, 7, 3, 6, 10};
+static const uint8_t pictures[3][5] = {
+    {0b01010, 0b11111, 0b11111, 0b01110, 0b00100}, /* large heart */
+    {0b00000, 0b01010, 0b01110, 0b00100, 0b00000}, /* small heart */
+    {0b00000, 0b01010, 0b00000, 0b10001, 0b01110}  /* smile */
 };
 
-struct Button {
-  explicit Button(uint8_t inputPin) : pin(inputPin) {}
+#define DEBOUNCE_MS 30UL
+#define FRAME_MS 400UL
 
-  uint8_t pin;
-  bool previous = HIGH;
-  bool stable = HIGH;
-  uint32_t changedAt = 0;
+static const uint8_t button_pins[2] = {PIN_BUTTON_A, PIN_BUTTON_B};
+static uint8_t button_previous[2] = {HIGH, HIGH};
+static uint8_t button_stable[2] = {HIGH, HIGH};
+static uint32_t button_changed_at[2] = {0, 0};
+static uint8_t show_smile = 0;
+static uint8_t paused = 0;
+static uint8_t small_heart = 0;
+static uint32_t last_frame = 0;
+static uint32_t last_status = 0;
 
-  bool pressed(uint32_t now) {
-    const bool reading = digitalRead(pin);
-    if (reading != previous) {
-      previous = reading;
-      changedAt = now;
-    }
-    if (reading != stable && now - changedAt >= kDebounceMs) {
-      stable = reading;
-      return stable == LOW;
-    }
-    return false;
+static uint8_t button_pressed(uint8_t button, uint32_t now) {
+  uint8_t reading = (uint8_t)digitalRead(button_pins[button]);
+
+  if (reading != button_previous[button]) {
+    button_previous[button] = reading;
+    button_changed_at[button] = now;
   }
-};
 
-Button buttonA{PIN_BUTTON_A};
-Button buttonB{PIN_BUTTON_B};
-bool smile = false;
-bool paused = false;
-bool smallHeart = false;
-uint32_t lastFrame = 0;
-uint32_t lastStatus = 0;
+  if (reading != button_stable[button] &&
+      now - button_changed_at[button] >= DEBOUNCE_MS) {
+    button_stable[button] = reading;
+    return button_stable[button] == LOW;
+  }
 
-// Refresh one row every millisecond. Disable the old row before changing
-// columns to avoid ghost pixels. Keep loop() free of blocking delays.
-void refreshDisplay() {
-  static uint32_t lastScan = 0;
-  static uint8_t row = 4;
-  const uint32_t now = micros();
-  if (now - lastScan < 1000) {
-    return;
-  }
-  lastScan = now;
-  digitalWrite(kRows[row], LOW);
-  row = (row + 1) % 5;
-  const uint8_t picture = smile ? 2 : (smallHeart ? 1 : 0);
-  for (uint8_t column = 0; column < 5; ++column) {
-    const bool lit = kPictures[picture][row] & (1u << (4 - column));
-    digitalWrite(kColumns[column], lit ? LOW : HIGH);
-  }
-  digitalWrite(kRows[row], HIGH);
+  return 0;
 }
 
-void setup() {
-  for (uint8_t pin : kRows) {
-    digitalWrite(pin, LOW);
-    pinMode(pin, OUTPUT);
+/* Refresh one LED matrix row every millisecond without blocking loop(). */
+static void refresh_display(void) {
+  static uint32_t last_scan = 0;
+  static uint8_t row = 4;
+  uint32_t now = micros();
+  uint8_t picture;
+  uint8_t column;
+
+  if (now - last_scan < 1000UL) {
+    return;
   }
-  for (uint8_t pin : kColumns) {
-    digitalWrite(pin, HIGH);
-    pinMode(pin, OUTPUT);
+  last_scan = now;
+
+  digitalWrite(rows[row], LOW);
+  row = (uint8_t)((row + 1) % 5);
+  picture = show_smile ? 2 : (small_heart ? 1 : 0);
+
+  for (column = 0; column < 5; column++) {
+    uint8_t mask = (uint8_t)(1U << (4 - column));
+    uint8_t lit = (uint8_t)(pictures[picture][row] & mask);
+    digitalWrite(columns[column], lit ? LOW : HIGH);
   }
+
+  digitalWrite(rows[row], HIGH);
+}
+
+void setup(void) {
+  uint8_t i;
+
+  for (i = 0; i < 5; i++) {
+    digitalWrite(rows[i], LOW);
+    pinMode(rows[i], OUTPUT);
+    digitalWrite(columns[i], HIGH);
+    pinMode(columns[i], OUTPUT);
+  }
+
   pinMode(PIN_BUTTON_A, INPUT_PULLUP);
   pinMode(PIN_BUTTON_B, INPUT_PULLUP);
   Serial.begin(115200);
-  Serial.println("micro:bit V2 Arduino demo: A=heart/smile, B=pause/resume");
+  Serial.println("micro:bit V2 demo: A=heart/smile, B=pause/resume");
 }
 
-void loop() {
-  refreshDisplay();
-  const uint32_t now = millis();
-  if (buttonA.pressed(now)) {
-    smile = !smile;
-    Serial.println(smile ? "A: smile" : "A: heart");
+void loop(void) {
+  uint32_t now;
+
+  refresh_display();
+  now = millis();
+
+  if (button_pressed(0, now)) {
+    show_smile = (uint8_t)!show_smile;
+    Serial.println(show_smile ? "A: smile" : "A: heart");
   }
-  if (buttonB.pressed(now)) {
-    paused = !paused;
-    lastFrame = now;
+
+  if (button_pressed(1, now)) {
+    paused = (uint8_t)!paused;
+    last_frame = now;
     Serial.println(paused ? "B: paused" : "B: running");
   }
-  if (!paused && now - lastFrame >= kFrameMs) {
-    lastFrame = now;
-    smallHeart = !smallHeart;
+
+  if (!paused && now - last_frame >= FRAME_MS) {
+    last_frame = now;
+    small_heart = (uint8_t)!small_heart;
   }
-  if (now - lastStatus >= 1000) {
-    lastStatus = now;
+
+  if (now - last_status >= 1000UL) {
+    last_status = now;
     Serial.print("uptime(s)=");
-    Serial.print(now / 1000);
+    Serial.print(now / 1000UL);
     Serial.print(" picture=");
-    Serial.print(smile ? "smile" : "heart");
+    Serial.print(show_smile ? "smile" : "heart");
     Serial.print(" animation=");
     Serial.println(paused ? "paused" : "running");
   }
